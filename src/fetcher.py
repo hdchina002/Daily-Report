@@ -22,7 +22,8 @@ import urllib.request
 import urllib.parse
 
 from config import (HISTORY_FILE, DATA_DIR, US_HOLIDAYS, A_H_HOLIDAYS,
-                    ETF_SHARE_TRACK, SOUTHBOUND_FOCUS)
+                    ETF_SHARE_TRACK, HEAT_HOT, HEAT_COLD)
+import percentile
 
 
 # ───────────────────────────── 通用 HTTP（复用参考实现的稳健写法） ─────────────────────────────
@@ -345,111 +346,203 @@ def _em_json(url):
 
 
 def fetch_southbound():
-    """南向/北向资金（沪深港通）。返回 {'date','south_net','north_net','note'}。
-    南向 = 港股通净买入额（亿元）。北向实时净流向已于 2024-08 停用，尽力取，取不到则标注。"""
-    url = ("https://push2.eastmoney.com/api/qt/kamt/get?fields1=f1,f2,f3&"
-           "fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65,"
-           "f66,f67,f68,f69,f70,f71,f72,f73,f74,f75,f76,f77,f78,f79,f80&klt=101&lmt=1")
-    j = _em_json(url)
+    """南向资金（港股通净买入，单位：亿港元）。
+
+    数据源：东方财富 datacenter `RPT_MUTUAL_DEAL_HISTORY`。
+    MUTUAL_TYPE: 002=港股通(沪)、004=港股通(深)；NET_DEAL_AMT 单位为**百万港元**。
+    原代码用的 kamt 接口里 `hkgt.netBuy` 字段根本不存在，故一直显示「—」。
+    北向实时净流向 2024-08 已停用，不再尝试。
+    """
     res = {"date": "", "south_net": None, "north_net": None, "note": ""}
-    if not j:
+    total, date, got = 0.0, "", 0
+    for mt in ("002", "004"):
+        url = ("https://datacenter-web.eastmoney.com/api/data/v1/get?"
+               "reportName=RPT_MUTUAL_DEAL_HISTORY&columns=ALL&pageSize=1&"
+               "sortColumns=TRADE_DATE&sortTypes=-1&source=WEB&client=WEB&"
+               "filter=(MUTUAL_TYPE%3D%22" + mt + "%22)")
+        j = _em_json(url)
+        rows = ((j or {}).get("result") or {}).get("data") or []
+        if not rows:
+            continue
+        r = rows[0]
+        v = _to_float(r.get("NET_DEAL_AMT"))
+        if v is not None:
+            total += v / 100.0      # 百万港元 → 亿港元
+            got += 1
+        date = date or (r.get("TRADE_DATE") or "")[:10]
+    if got:
+        res["south_net"] = round(total, 2)
+        res["date"] = date
+        res["note"] = "北向实时净流向已于2024-08停用，仅南向可用"
+    else:
         res["note"] = "南向接口暂不可用"
-        return res
-    try:
-        d = (j.get("data") or {})
-        # 取最新一天（kamt 的 data 是个按日期的列表或嵌套）
-        rec = None
-        if isinstance(d, list) and d:
-            rec = d[-1]
-        elif isinstance(d, dict):
-            # 形如 {'hkgt': {'netBuy':...}, 's2n':..., 'n2s':...}
-            # 优先聚合字段
-            if "hkgt" in d and isinstance(d["hkgt"], dict):
-                rec = d["hkgt"]
-            rec = d  # 直接用整个 data 尝试取字段
-        if rec:
-            # 常见字段：港股通净买入 f52? 这里用更稳的命名：data.hkgt.netBuy / s2n
-            south = rec.get("hkgt", {}).get("netBuy") if isinstance(rec.get("hkgt"), dict) else None
-            if south is None:
-                # 退一步：data 顶层 netBuy（部分版本聚合）
-                south = rec.get("netBuy")
-            north = rec.get("s2n", {}).get("netBuy") if isinstance(rec.get("s2n"), dict) else None
-            if north is None:
-                north = rec.get("netBuy")  # 若只拿到一个聚合值
-            res["south_net"] = _to_billion(south)
-            res["north_net"] = _to_billion(north)
-            res["date"] = rec.get("date") or rec.get("f51") or ""
-            if north is None:
-                res["note"] = "北向实时净流向已于2024-08停用，仅南向可用"
-    except Exception:
-        res["note"] = "南向解析异常（请按 README 核对字段）"
     return res
 
 
 def fetch_etf_shares():
-    """行业/主题 ETF 当日份额（亿份）。返回 {code: {'name','shares','price_chg'}}。
-    字段 f106=基金份额(亿份) 为经验值；取不到置 None。"""
+    """行业/主题 ETF 份额（亿份）+ 成交额（亿元）+ 涨跌幅。
+
+    数据源：东方财富 `push2.eastmoney.com/api/qt/stock/get`。
+    f84=总份额(份)、f48=成交额(元)、f170=涨跌幅(×100)。
+    原代码用 `clist/get?fs=b:代码` 是无效查询（返回 rc:102 data:null），
+    且 f106 字段在此接口不存在 —— 这是九行全「—」的原因。
+    """
     out = {}
     for code, name in ETF_SHARE_TRACK:
-        shares = None
-        for fs in ("b:%s" % code, "i:%s" % code):
-            url = ("https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=1&np=1&"
-                   "fields=f12,f14,f104,f106,f2,f3,f6&fs=%s" % fs)
-            j = _em_json(url)
-            if not j:
-                continue
-            try:
-                diff = (j.get("data") or {}).get("diff") or []
-                if diff:
-                    x = diff[0]
-                    shares = _to_float(x.get("f106"))
-                    out[code] = {
-                        "name": name or x.get("f14"),
-                        "shares": shares,
-                        "chg_pct": _to_float(x.get("f3")),
-                        "amount": _to_billion(x.get("f6")),  # 成交额(元)→亿元
-                    }
-                    break
-            except Exception:
-                continue
-        if code not in out:
-            out[code] = {"name": name, "shares": None, "chg_pct": None}
+        secid = ("1." if code.startswith("5") else "0.") + code
+        url = ("https://push2.eastmoney.com/api/qt/stock/get?"
+               "secid=%s&fields=f57,f58,f48,f84,f170" % secid)
+        d = (_em_json(url) or {}).get("data") or {}
+        shares = _to_float(d.get("f84"))
+        amount = _to_float(d.get("f48"))
+        chg = _to_float(d.get("f170"))
+        out[code] = {
+            "name": name or d.get("f58"),
+            "shares": round(shares / 1e8, 4) if shares else None,   # 份 → 亿份
+            "amount": round(amount / 1e8, 2) if amount else None,   # 元 → 亿元
+            "chg_pct": (chg / 100.0) if chg is not None else None,
+        }
     return out
 
 
 def fetch_margin_balance():
-    """两融余额（融资融券）。返回 {'date','balance','note'}（亿元）。
-    取最新一日；与上一日差值由 main/report 用历史缓存算。"""
-    url = ("https://datacenter-web.eastmoney.com/api/data/v1/get?reportName="
-           "RPTA_WEB_RZRQ_GMRQZ&columns=ALL&pageSize=1&sortColumns=DATE&"
-           "sortTypes=-1&source=WEB&client=WEB")
+    """融资融券余额（亿元）。取最新一日。
+
+    报表 `RPTA_WEB_RZRQ_GMRQZ` 已被东财下线（返回「报表配置不存在」），
+    现用 `RPTA_RZRQ_LSHJ`，排序列是 `DIM_DATE`（不是 DATE/TRADE_DATE），
+    字段 `RZRQYE` 单位为元。
+    """
+    url = ("https://datacenter-web.eastmoney.com/api/data/v1/get?"
+           "reportName=RPTA_RZRQ_LSHJ&columns=DIM_DATE,RZYE,RQYE,RZRQYE&"
+           "pageSize=2&sortColumns=DIM_DATE&sortTypes=-1&source=WEB&client=WEB")
     j = _em_json(url)
     res = {"date": "", "balance": None, "note": ""}
-    if not j:
+    rows = ((j or {}).get("result") or {}).get("data") or []
+    if not rows:
         res["note"] = "两融接口暂不可用"
         return res
-    try:
-        rows = ((j.get("result") or {}).get("data") or [])
-        if rows:
-            r = rows[0]
-            bal = (r.get("FIN_BALANCE") or r.get("MJRE_BALANCE") or
-                   r.get("RZRQYE") or r.get("balance"))
-            res["balance"] = _to_billion(bal)
-            res["date"] = r.get("DATE") or r.get("date") or ""
-    except Exception:
-        res["note"] = "两融解析异常（请按 README 核对字段）"
+    r = rows[0]
+    bal = _to_float(r.get("RZRQYE"))
+    if bal is None:
+        res["note"] = "两融解析异常"
+        return res
+    res["balance"] = round(bal / 1e8, 2)      # 元 → 亿元
+    res["date"] = (r.get("DIM_DATE") or "")[:10]
     return res
 
 
-def fetch_southbound_focus():
-    """重点个股南向净买卖（港股通）。尽力而为：取不到返回 {}（报告显示 —）。
-    数据源：东方财富 港股通持股明细（估算：今日市值 - 昨日市值）。"""
-    out = {}
-    for code, name in SOUTHBOUND_FOCUS:
-        out[code] = {"name": name, "net": None}
-    # 一次性拉「港股通活跃个股」较难稳定，这里先占位；
-    # 若日后确认接口，可在此填充 out[code]['net']。
+# ─────────────── A股月度总成交额（上证 + 深成）与 3 年分位 ───────────────
+_MARKET_AMOUNT_SECID = ("1.000001", "0.399001")   # 上证指数、深证成指
+AMOUNT_CACHE_FILE = os.path.join(DATA_DIR, "amount_monthly.json")
+
+
+def _em_daily_amount(secid, years=3):
+    """指数每日成交额（元），返回升序 [(date, amount)]。fields2=f51,f57。"""
+    beg = (datetime.date.today()
+           - datetime.timedelta(days=int(years * 365.25) + 15)).strftime("%Y%m%d")
+    url = ("https://push2his.eastmoney.com/api/qt/stock/kline/get?"
+           "secid=%s&klt=101&fqt=1&beg=%s&end=20500101&"
+           "fields1=f1,f2&fields2=f51,f57" % (secid, beg))
+    text = http_get(url, decode="utf-8", retry=2, timeout=10,
+                    referer="https://quote.eastmoney.com")
+    if not text:
+        return []
+    try:
+        kl = ((json.loads(text).get("data") or {}) or {}).get("klines") or []
+    except (ValueError, AttributeError):
+        return []
+    out = []
+    for row in kl:
+        p = row.split(",")
+        if len(p) >= 2:
+            try:
+                out.append((p[0], float(p[1])))
+            except ValueError:
+                continue
     return out
+
+
+def _load_amount_cache():
+    try:
+        with open(AMOUNT_CACHE_FILE, encoding="utf-8") as f:
+            return json.load(f).get("months") or {}
+    except Exception:
+        return {}
+
+
+def _save_amount_cache(months):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = AMOUNT_CACHE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"months": months,
+                   "updated": datetime.date.today().isoformat()},
+                  f, ensure_ascii=False)
+    os.replace(tmp, AMOUNT_CACHE_FILE)
+
+
+def _summarize_amount(months, years=3):
+    """月度汇总 → 当月总额/日均 + 近 3 年分位。
+
+    分位用「月日均成交额」而不是月总额：当月往往没走完，且各月交易日数不同，
+    用日均才能和历史完整月公平比较。
+    """
+    if not months:
+        return {}
+    keys = sorted(months)
+    cur_key = keys[-1]
+
+    def node(k):
+        n = months[k]
+        days = int(n.get("days") or 1)
+        return {"total": float(n["total"]), "days": days,
+                "daily_avg": float(n["total"]) / days}
+
+    cur = node(cur_key)
+    past = [node(k)["daily_avg"] for k in keys[:-1]][-int(years * 12):]
+    pct = percentile.pct_of_price(cur["daily_avg"], past) if past else None
+    heat = ""
+    if pct is not None:
+        if pct >= HEAT_HOT:
+            heat = "过热🔥"
+        elif pct <= HEAT_COLD:
+            heat = "过冷❄️"
+    return {
+        "asof": months[cur_key].get("last_date", ""),
+        "month": cur_key,
+        "current": cur,
+        "past_months": len(past),
+        "percentile": pct,
+        "heat": heat,
+    }
+
+
+def fetch_market_amount_monthly(years=3):
+    """上证指数 + 深证成指 每月总成交额，及当月在近 3 年中的位置。
+
+    金额单位统一为**元**，展示时再换算成万亿。接口失败降级读
+    data/amount_monthly.json 缓存；仍无数据返回 {}（报告显示「—」）。
+    """
+    series = {}
+    ok = True
+    for secid in _MARKET_AMOUNT_SECID:
+        bars = _em_daily_amount(secid, years)
+        if not bars:
+            ok = False
+            break
+        for d, amt in bars:
+            m = d[:7]
+            n = series.setdefault(m, {"total": 0.0, "dates": set()})
+            n["total"] += amt
+            n["dates"].add(d)
+    if ok and series:
+        months = {m: {"total": round(n["total"], 2),
+                      "days": len(n["dates"]),
+                      "last_date": max(n["dates"])}
+                  for m, n in series.items()}
+        _save_amount_cache(months)
+    else:
+        months = _load_amount_cache()
+    return _summarize_amount(months, years)
 
 
 # ───────────────────────────── 休市日判断 ─────────────────────────────

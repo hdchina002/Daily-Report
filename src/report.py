@@ -35,6 +35,13 @@ def _pct(v):
     return ("+%.2f%%" if v >= 0 else "%.2f%%") % v
 
 
+def _trillion(v):
+    """元 → 万亿，用于 A 股月度总成交额。"""
+    if v is None:
+        return "—"
+    return "%.2f 万亿" % (float(v) / 1e12)
+
+
 def _pct_block(week52, three_year):
     w = ("%.0f%%" % week52) if week52 is not None else "—"
     t = ("%.0f%%" % three_year) if three_year is not None else "—"
@@ -259,28 +266,42 @@ def build_evening(quotes, pct_data, alerts, events, capital, asof, wind_ref=None
 
     # 三、资金面（硬数据）
     P.append("## 三、资金面（硬数据）")
+
+    # 3.1 A股月度总成交额（上证 + 深成）+ 3年分位 + 过热判定
+    ma = (capital or {}).get("market_amount") or {}
+    P.append("**A股月度总成交额（上证 + 深成）**")
+    if ma.get("current"):
+        c = ma["current"]
+        P.append("- 本月（%s）至今：**%s**（%d 个交易日，日均 %s）"
+                 % (ma.get("month", ""), _trillion(c["total"]), c["days"],
+                    _trillion(c["daily_avg"])))
+        p = ma.get("percentile")
+        tag = ma.get("heat") or ("正常（不过热）" if p is not None else "")
+        P.append("- 3年分位（按月日均，对比过去 %d 个完整月）：**%s** %s"
+                 % (ma.get("past_months", 0),
+                    ("%.0f%%" % p) if p is not None else "—", tag))
+    else:
+        P.append("- 本月：—（成交额接口暂不可用）")
+    P.append("")
+
     sb = (capital or {}).get("southbound") or {}
     if sb.get("south_net") is not None:
-        P.append("- 南向（港股通）净买入：**%s 亿元**" % _f(sb["south_net"], 2))
+        dt = ("（%s）" % sb["date"]) if sb.get("date") else ""
+        P.append("- 南向（港股通）净买入%s：**%s 亿港元**"
+                 % (dt, _f(sb["south_net"], 2)))
     else:
         P.append("- 南向（港股通）净买入：—（%s）" % sb.get("note", "接口暂不可用"))
-    focus = (capital or {}).get("southbound_focus") or {}
-    for code, name in [("hk00700", "腾讯控股"), ("hk03690", "美团")]:
-        f = focus.get(code)
-        net = f.get("net") if f else None
-        P.append("  - %s 南向净买卖：%s" % (
-            name, (_f(net, 2) + " 亿元") if net is not None else "—"))
     P.append("")
 
     P.append("**行业ETF份额变化 + 成交额**（净申购=资金流入；成交额大=交易热）")
     etf = (capital or {}).get("etf") or {}
     for code, name in _etf_list():
         e = etf.get(code) or {}
-        sh = _f(e["shares"], 2) if e.get("shares") is not None else None
+        sh = _f(e.get("shares"), 2) if e.get("shares") is not None else None
         d = e.get("delta")
         dstr = ("（净申购 +%s 亿份）" % _f(d, 2)) if d is not None and d > 0 else \
               ("（净赎回 %s 亿份）" % _f(d, 2)) if d is not None and d < 0 else ""
-        astr = ("｜ 成交额 %s亿" % _f(e["amount"], 1)) if e.get("amount") is not None else ""
+        astr = ("｜ 成交额 %s 亿" % _f(e["amount"], 1)) if e.get("amount") is not None else ""
         bits = []
         if sh is not None:
             bits.append("%s 亿份" % sh)
@@ -293,10 +314,14 @@ def build_evening(quotes, pct_data, alerts, events, capital, asof, wind_ref=None
 
     mg = (capital or {}).get("margin") or {}
     if mg.get("balance") is not None:
+        bal = mg["balance"]
+        bstr = ("%.2f 万亿" % (bal / 10000.0)) if abs(bal) >= 10000 \
+            else ("%s 亿元" % _f(bal, 2))
         delta = mg.get("delta")
         dstr = ("（较上日 %s%s 亿）" % ("+" if (delta or 0) >= 0 else "",
                                         _f(delta, 2))) if delta is not None else ""
-        P.append("**融资融券余额**：%s 亿元%s" % (_f(mg["balance"], 2), dstr))
+        dt = ("（%s）" % mg["date"]) if mg.get("date") else ""
+        P.append("**融资融券余额**%s：%s%s" % (dt, bstr, dstr))
     else:
         P.append("**融资融券余额**：—（%s）" % mg.get("note", "接口暂不可用"))
     P.append("")
@@ -342,8 +367,9 @@ def build_evening(quotes, pct_data, alerts, events, capital, asof, wind_ref=None
                 P.append("  ↳ %s" % impact)
         P.append("")
 
-    P.append("> 数据：腾讯行情（A/H 收盘）+ 东方财富（历史K线 / 资金面，字段以部署后校验为准）。红涨绿跌。")
+    P.append("> 数据：腾讯行情（A/H 收盘）+ 东方财富（历史K线 / 资金面 / 指数日成交额）。红涨绿跌。")
     P.append("> 分位＝近 3 年（约 756 个交易日）前复权收盘价区间位置：0%=三年最低，100%=三年最高；上市不足 3 年的按上市以来计算。")
+    P.append("> 月度成交额＝上证指数＋深证成指每日成交额合计；当月未走完，3年分位按「月日均」与过去 36 个完整月比较，≥80% 过热🔥 / ≤20% 过冷❄️。")
     return "\n".join(P)
 
 

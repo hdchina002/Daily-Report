@@ -222,7 +222,8 @@ def run_evening():
     capital = {"southbound": fetcher.fetch_southbound(),
                "etf": fetcher.fetch_etf_shares(),
                "margin": fetcher.fetch_margin_balance(),
-               "southbound_focus": fetcher.fetch_southbound_focus()}
+               "market_amount": fetcher.fetch_market_amount_monthly(
+                   config.PERCENTILE_WINDOW_YEARS)}
     # 计算 ETF 份额 / 两融 较上日 delta
     prev = _last_prior_snapshot()
     if prev and prev.get("capital"):
