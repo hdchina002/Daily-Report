@@ -4,7 +4,8 @@ fetcher.py —— 所有外部数据源（行情 + 历史K线 + 资金面）。
 
 数据源与可靠性说明：
   ✅ 腾讯 qt.gtimg.cn 实时报价       —— 已验证可用（GBK 编码，见下方解析）
-  ✅ 腾讯 web.ifzq.gtimg.cn 历史K线  —— 已验证可用（前复权日K）
+  ✅ 东方财富 push2his 历史K线       —— 2026-11 起主数据源（前复权日K，一次取满 3 年）
+     腾讯 web.ifzq.gtimg.cn 历史K线已失效（返回 code:11 No dispatch info found），仅保留作降级。
   ⚠️ 东方财富 南向/北向/ETF份额/两融 —— 免费接口，字段可能随版本变动；
        代码已做防御式解析，取不到时返回 None，报告里显示「—」而**不会中断推送**。
        首次部署后请按 README「验证 API 代码」小节核对这几个字段。
@@ -160,13 +161,81 @@ def fetch_kline(symbol, end_date, count=320):
     return _parse_kline(text)
 
 
-def fetch_history_full(symbol, years=3):
-    """分页拉满 years 年的日K（每页 320，向后翻页），返回升序 [(date, close)]。"""
+# 指数在东方财富的 secid 与腾讯代码不是一套，需要显式映射。
+_EM_INDEX_SECID = {
+    "usDJI": "100.DJIA",        # 道琼斯工业指数
+    "usSPX": "100.SPX",         # 标普500
+    "r_hkHSI": "100.HSI",       # 恒生指数
+    "r_hkHSTECH": "124.HSTECH", # 恒生科技指数
+    # usIXIC（纳斯达克综合指数）：东财只有 100.NDX（纳斯达克100），
+    # 点数口径完全不同，禁止拿 NDX 的历史去算 IXIC 的分位 → 该标的分位显示「—」。
+}
+
+
+def _em_secid_candidates(code):
+    """腾讯代码 → 东方财富 secid 候选（按优先级）。"""
+    if code in _EM_INDEX_SECID:
+        return [_EM_INDEX_SECID[code]]
+    if code == "usIXIC":
+        return []
+    c = code.strip()
+    if c.startswith("sh"):
+        return ["1." + c[2:]]                       # 沪市
+    if c.startswith("sz"):
+        return ["0." + c[2:]]                       # 深市
+    if c.startswith("r_hk"):
+        return ["100." + c[4:], "124." + c[4:]]
+    if c.startswith("hk"):
+        return ["116." + c[2:]]                     # 港股
+    if c.startswith("us"):
+        t = c[2:]
+        # 105=NASDAQ / 106=NYSE / 107=AMEX(含多数ETF) / 100=指数
+        return ["105." + t, "106." + t, "107." + t, "100." + t]
+    if c.isdigit():                                 # 纯数字 ETF，如 159992
+        return ["0." + c, "1." + c]
+    return []
+
+
+def fetch_history_em(symbol, years=3):
+    """东方财富 push2his：一次取近 years 年的前复权日K。
+    返回升序 [(date, close)]；自动在多个 secid 候选中选第一个有数据的；全失败返回 []。
+
+    fields2=f51,f53 → 每行 "YYYY-MM-DD,收盘价"（已实测，2 列）。
+    """
+    beg = (datetime.date.today()
+           - datetime.timedelta(days=int(years * 365.25) + 15)).strftime("%Y%m%d")
+    for secid in _em_secid_candidates(symbol):
+        url = ("https://push2his.eastmoney.com/api/qt/stock/kline/get?"
+               "secid=%s&klt=101&fqt=1&beg=%s&end=20500101&"
+               "fields1=f1,f2&fields2=f51,f53" % (secid, beg))
+        text = http_get(url, decode="utf-8", retry=2, timeout=10,
+                        referer="https://quote.eastmoney.com")
+        if not text:
+            continue
+        try:
+            kl = ((json.loads(text).get("data") or {}) or {}).get("klines") or []
+        except (ValueError, AttributeError):
+            continue
+        bars = []
+        for row in kl:
+            parts = row.split(",")
+            if len(parts) >= 2:
+                try:
+                    bars.append((parts[0], float(parts[1])))
+                except (ValueError, IndexError):
+                    continue
+        if bars:
+            bars.sort(key=lambda x: x[0])
+            return bars
+    return []
+
+
+def _fetch_history_tencent(symbol, years=3):
+    """降级：腾讯分页拉日K（该接口 2026-11 起返回 code:11，保留兜底）。"""
     needed = int(years * 252) + 30
     end = datetime.date.today().strftime("%Y-%m-%d")
-    all_bars = []
-    seen = set()
-    for _ in range(20):  # 最多翻 20 页
+    all_bars, seen = [], set()
+    for _ in range(20):
         bars = fetch_kline(symbol, end, count=320)
         if not bars:
             break
@@ -176,8 +245,7 @@ def fetch_history_full(symbol, years=3):
                 all_bars.append((d, c))
         if len(all_bars) >= needed:
             break
-        # 把窗口再往前推：以最早一根的前一天作为新的 END
-        earliest = min(b - (0,) for b in all_bars)[0] if all_bars else end
+        earliest = min(all_bars, key=lambda b: b[0])[0] if all_bars else end
         try:
             dt = datetime.datetime.strptime(earliest, "%Y-%m-%d").date()
             end = (dt - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
@@ -185,6 +253,15 @@ def fetch_history_full(symbol, years=3):
             break
     all_bars.sort(key=lambda x: x[0])
     return all_bars
+
+
+def fetch_history_full(symbol, years=3):
+    """拉满近 years 年日K（前复权），返回升序 [(date, close)]。
+    主用东方财富；取不到再降级腾讯分页。无可用 secid 的标的直接跳过，不发无效请求。"""
+    if not _em_secid_candidates(symbol):
+        return []
+    bars = fetch_history_em(symbol, years)
+    return bars if bars else _fetch_history_tencent(symbol, years)
 
 
 # ───────────────────────────── 本地历史缓存（随仓库提交） ─────────────────────────────
@@ -217,16 +294,23 @@ def ensure_history(symbols, years=3, today_close_map=None):
     changed = False
     for sym in symbols:
         node = hist.get(sym)
+        if node and node.get("unavailable"):
+            # 负缓存：该标的确认无历史数据源（如纳斯达克综合指数、OTC ADR），
+            # 避免每次运行都重复发一堆注定失败的请求。
+            continue
         if not node or not node.get("dates"):
             bars = fetch_history_full(sym, years)
             if bars:
                 hist[sym] = {"dates": [b[0] for b in bars],
                              "closes": [b[1] for b in bars]}
-                changed = True
+            else:
+                hist[sym] = {"dates": [], "closes": [], "unavailable": True}
+            changed = True
+            node = hist.get(sym)  # 首次刚写入，必须重新取，不能沿用上面的 None
         # 增量：把今天收盘价补进去（若已有同日则覆盖）
         if today_close_map and sym in today_close_map:
             price = today_close_map[sym]
-            if price and node:
+            if price and node and node.get("dates"):
                 dates, closes = node["dates"], node["closes"]
                 if dates and dates[-1] == today:
                     closes[-1] = price

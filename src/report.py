@@ -55,6 +55,7 @@ def _sector_heat(pct_data, members):
 
 
 def _top_mover(quotes, members):
+    """板块内涨跌幅最高的成分股（相对最强，全跌时就是跌得最少的那只）。"""
     best = None
     for c, name, _ in members:
         q = quotes.get(c, {})
@@ -62,6 +63,17 @@ def _top_mover(quotes, members):
             if best is None or q["change_pct"] > best[1]:
                 best = (name, q["change_pct"])
     return best
+
+
+def _mover_label(pct):
+    """措辞要跟数字的方向一致：全跌时叫「领涨」是误导。"""
+    if pct is None:
+        return "—"
+    if pct > 0:
+        return "领涨"
+    if pct < 0:
+        return "最抗跌"
+    return "持平"
 
 
 def _heat_tag(avg):
@@ -180,11 +192,11 @@ def build_morning(quotes, pct_data, alerts, events, asof):
         h = _sector_heat(pct_data, members)
         top = _top_mover(quotes, members)
         nm, amt = etf_amts[sec]
-        line = "- %s：板块均 %s ｜ 分位 %s%s ｜ 资金 %s" % (
-            sec, _pct(mv), (_f(h, 0) if h is not None else "—"), _heat_tag(h),
-            _us_amount(amt))
+        line = "- %s：板块均 %s ｜ 3年分位 %s%s ｜ 资金 %s" % (
+            sec, _pct(mv), ((_f(h, 0) + "%") if h is not None else "—"),
+            _heat_tag(h), _us_amount(amt))
         if top:
-            line += " ｜ 龙头%s %s" % (top[0], _pct(top[1]))
+            line += " ｜ %s%s %s" % (_mover_label(top[1]), top[0], _pct(top[1]))
         P.append(line)
     P.append("")
 
@@ -213,7 +225,8 @@ def build_morning(quotes, pct_data, alerts, events, asof):
                 P.append("  ↳ %s" % impact)
         P.append("")
 
-    P.append("> 数据：腾讯行情 qt.gtimg.cn（美股收盘）。红涨绿跌。")
+    P.append("> 数据：腾讯行情 qt.gtimg.cn（美股收盘）+ 东方财富历史K线。红涨绿跌。")
+    P.append("> 分位＝近 3 年（约 756 个交易日）前复权收盘价区间位置：0%=三年最低，100%=三年最高；上市不足 3 年的按上市以来计算。")
     return "\n".join(P)
 
 
@@ -236,10 +249,11 @@ def build_evening(quotes, pct_data, alerts, events, capital, asof, wind_ref=None
         mv = _sector_avg(quotes, members)
         h = _sector_heat(pct_data, members)
         top = _top_mover(quotes, members)
-        line = "- %s：板块均 %s ｜ 分位 %s%s" % (
-            sec, _pct(mv), (_f(h, 0) if h is not None else "—"), _heat_tag(h))
+        line = "- %s：板块均 %s ｜ 3年分位 %s%s" % (
+            sec, _pct(mv), ((_f(h, 0) + "%") if h is not None else "—"),
+            _heat_tag(h))
         if top:
-            line += " ｜ 领涨%s %s" % (top[0], _pct(top[1]))
+            line += " ｜ %s%s %s" % (_mover_label(top[1]), top[0], _pct(top[1]))
         P.append(line)
     P.append("")
 
@@ -328,7 +342,8 @@ def build_evening(quotes, pct_data, alerts, events, capital, asof, wind_ref=None
                 P.append("  ↳ %s" % impact)
         P.append("")
 
-    P.append("> 数据：腾讯行情（A/H 收盘）+ 东方财富（资金面，字段以部署后校验为准）。")
+    P.append("> 数据：腾讯行情（A/H 收盘）+ 东方财富（历史K线 / 资金面，字段以部署后校验为准）。红涨绿跌。")
+    P.append("> 分位＝近 3 年（约 756 个交易日）前复权收盘价区间位置：0%=三年最低，100%=三年最高；上市不足 3 年的按上市以来计算。")
     return "\n".join(P)
 
 
@@ -396,11 +411,11 @@ def build_morning_title(quotes, pct_data, alerts):
 
 
 def build_evening_title(quotes, pct_data, alerts):
-    """晚报标题：沪指 + 领涨板块 + 过热数。"""
+    """晚报标题：沪指 + 相对最强板块（全跌时改称「抗跌」）+ 过热数。"""
     best = None
     for sec, members in A_H_SECTORS.items():
         mv = _sector_avg(quotes, members)
         if mv is not None and (best is None or mv > best[1]):
             best = (sec, mv)
-    focus = ("%s领涨" % best[0]) if best else None
+    focus = (("%s领涨" if best[1] > 0 else "%s抗跌") % best[0]) if best else None
     return _brief("📊晚报", quotes, pct_data, alerts, "sh000001", A_H_SECTORS, focus)
