@@ -195,7 +195,8 @@ def run_morning():
 
     desp = report_mod.build_morning(quotes, ppt, al, ev,
                                    _now_beijing().strftime("%Y-%m-%d %H:%M"))
-    ok, msg = pusher.push("📊 早报 · 隔夜美股", desp)
+    title = report_mod.build_morning_title(quotes, ppt, al)
+    ok, msg = pusher.push(title, desp)
     print("morning:", ok, msg)
 
 
@@ -243,7 +244,8 @@ def run_evening():
     desp = report_mod.build_evening(quotes, ppt, al, ev, capital,
                                    _now_beijing().strftime("%Y-%m-%d %H:%M"),
                                    wind_ref=wind_ref)
-    ok, msg = pusher.push("📊 晚报 · A股/港股 + 资金面", desp)
+    title = report_mod.build_evening_title(quotes, ppt, al)
+    ok, msg = pusher.push(title, desp)
     print("evening:", ok, msg)
 
 

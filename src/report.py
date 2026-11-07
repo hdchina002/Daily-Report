@@ -340,3 +340,67 @@ def _etf_list():
 def morning_wind_snapshot(quotes):
     """早报跑完，导出各美股板块平均涨跌，供晚报做风向验证。"""
     return {sec: _sector_avg(quotes, members) for sec, members in SECTORS.items()}
+
+
+# ───────────── 标题：免费版微信卡片只显示标题，把核心结论压进去 ─────────────
+# Server酱 免费会员卡片「仅显示标题」，正文要点开「查看详情」。
+# 官方限制：title ≤ 32 字符、不能含换行。故标题要自带结论。
+_INDEX_SHORT = {
+    "usIXIC": "纳指", "usDJI": "道指", "usSPX": "标普",
+    "sh000001": "沪指", "sz399001": "深成", "sz399006": "创业板",
+    "r_hkHSI": "恒指", "r_hkHSTECH": "恒科",
+}
+
+
+def _index_brief(code, quotes):
+    v = (quotes.get(code) or {}).get("change_pct")
+    if v is None:
+        return None
+    return "%s%+.1f%%" % (_INDEX_SHORT.get(code, "指数"), v)
+
+
+def _hot_sector_count(pct_data, sectors):
+    n = 0
+    for members in sectors.values():
+        vals = [(pct_data.get(c) or {}).get("three_year") for c, _, _ in members]
+        vals = [v for v in vals if v is not None]
+        if vals and sum(vals) / len(vals) >= HEAT_HOT:
+            n += 1
+    return n
+
+
+def _brief(prefix, quotes, pct_data, alerts, index_code, sectors, focus):
+    parts = [prefix]
+    idx = _index_brief(index_code, quotes)
+    if idx:
+        parts.append(idx)
+    if focus:
+        parts.append(focus)
+    hot = _hot_sector_count(pct_data, sectors)
+    if hot:
+        parts.append("过热%d" % hot)
+    if alerts:
+        parts.append("⚠%d" % len(alerts))
+    return " ".join(parts)[:32]
+
+
+def build_morning_title(quotes, pct_data, alerts):
+    """早报标题：纳指风向 + 资金最活跃板块（ETF成交额最大）+ 过热数。"""
+    best = None
+    for sec, code in SECTOR_ETF.items():
+        amt = (quotes.get(code) or {}).get("amount") if code else None
+        if amt is not None and (best is None or amt > best[1]):
+            best = (sec, amt)
+    focus = ("钱在%s" % best[0]) if best else None
+    return _brief("📊早报", quotes, pct_data, alerts, "usIXIC", SECTORS, focus)
+
+
+def build_evening_title(quotes, pct_data, alerts):
+    """晚报标题：沪指 + 领涨板块 + 过热数。"""
+    best = None
+    for sec, members in A_H_SECTORS.items():
+        mv = _sector_avg(quotes, members)
+        if mv is not None and (best is None or mv > best[1]):
+            best = (sec, mv)
+    focus = ("%s领涨" % best[0]) if best else None
+    return _brief("📊晚报", quotes, pct_data, alerts, "sh000001", A_H_SECTORS, focus)
