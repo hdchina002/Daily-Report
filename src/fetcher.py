@@ -20,7 +20,7 @@ import datetime
 import urllib.request
 import urllib.parse
 
-from config import (HISTORY_FILE, DATA_DIR, US_HOLIDAYS, A_HOLIDAYS,
+from config import (HISTORY_FILE, DATA_DIR, US_HOLIDAYS, A_H_HOLIDAYS,
                     ETF_SHARE_TRACK, SOUTHBOUND_FOCUS)
 
 
@@ -389,7 +389,7 @@ def us_last_trading_day():
 def a_last_trading_day():
     beijing = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
     d = beijing.date()
-    hol = _str_dates(A_HOLIDAYS)
+    hol = _str_dates(A_H_HOLIDAYS)
     while d.weekday() >= 5 or d.isoformat() in hol:
         d -= datetime.timedelta(days=1)
     return d.strftime("%Y-%m-%d")
@@ -400,7 +400,7 @@ def is_us_holiday(date_str):
 
 
 def is_a_holiday(date_str):
-    return date_str in _str_dates(A_HOLIDAYS)
+    return date_str in _str_dates(A_H_HOLIDAYS)
 
 
 # ───────────────────────────── 小工具 ─────────────────────────────

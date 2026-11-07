@@ -38,22 +38,37 @@ def _now_beijing():
     return (datetime.datetime.utcnow() + datetime.timedelta(hours=8))
 
 
-def us_market_closed_now():
-    beijing = _now_beijing()
-    us = beijing - datetime.timedelta(hours=12)
-    d = us.date()
-    if d.weekday() >= 5:
+def _beijing_date():
+    return _now_beijing().date()
+
+
+def _is_weekend(d):
+    return d.weekday() >= 5
+
+
+def us_session_closed():
+    """早报要报的是『最近一个已收盘的美股交易日』。
+    今天(北京)是周末 → 无新鲜数据；或该交易日是美股假期 → 跳过（静默，不推送）。"""
+    bd = _beijing_date()
+    if bd.isoformat() in set(config.TRADING_DAY_OVERRIDE):
+        return False
+    if _is_weekend(bd):
         return True
-    if d.isoformat() in set(config.US_HOLIDAYS):
+    # 北京工作日对应要报的美股交易日≈昨天(美东)，若为美股假期则无新鲜数据
+    sess = bd - datetime.timedelta(days=1)
+    if sess.isoformat() in set(config.US_HOLIDAYS):
         return True
     return False
 
 
-def a_market_closed_now():
-    d = _now_beijing().date()
-    if d.weekday() >= 5:
+def a_session_closed():
+    """晚报对应 A股/港股当日。今天(北京)是周末或 A/H 假期 → 跳过（静默，不推送）。"""
+    bd = _beijing_date()
+    if bd.isoformat() in set(config.TRADING_DAY_OVERRIDE):
+        return False
+    if _is_weekend(bd):
         return True
-    if d.isoformat() in set(config.A_HOLIDAYS):
+    if bd.isoformat() in set(config.A_H_HOLIDAYS):
         return True
     return False
 
@@ -151,13 +166,8 @@ def _load_last_morning():
 
 
 def run_morning():
-    if us_market_closed_now():
-        title = "📊 早报 · 美股休市"
-        desp = ("# 📊 早报\n\n美股今日（或最近交易日）休市，暂无隔夜行情。\n"
-                "下一交易日恢复正常推送。\n\n> %s"
-                % _now_beijing().strftime("%Y-%m-%d %H:%M"))
-        ok, msg = pusher.push(title, desp)
-        print("morning(休市):", ok, msg)
+    if us_session_closed():
+        print("morning: 今日(周末/美股休市)不推送，跳过")
         return
 
     codes = [c for c, _ in config.US_INDICES]
@@ -185,13 +195,8 @@ def run_morning():
 
 
 def run_evening():
-    if a_market_closed_now():
-        title = "📊 晚报 · A股/港股休市"
-        desp = ("# 📊 晚报\n\nA股/港股今日休市，暂无收盘行情与资金面数据。\n"
-                "下一交易日恢复正常推送。\n\n> %s"
-                % _now_beijing().strftime("%Y-%m-%d %H:%M"))
-        ok, msg = pusher.push(title, desp)
-        print("evening(休市):", ok, msg)
+    if a_session_closed():
+        print("evening: 今日(周末/A股港股休市)不推送，跳过")
         return
 
     codes = ([c for c, _ in config.A_INDICES] + [c for c, _ in config.HK_INDICES])
