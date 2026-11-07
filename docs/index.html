@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>板块冷热提醒 · 报告列表</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--text:#1f2328;--muted:#6b7280;--line:#e5e7eb;
+--accent:#2563eb;--up:#d1242f;--down:#1a7f37}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:860px;margin:0 auto;padding:24px 16px 60px}
+header h1{font-size:22px;margin:0 0 6px}
+.sub{color:var(--muted);font-size:14px;margin-bottom:22px;line-height:1.6}
+.month{font-size:15px;color:var(--muted);margin:26px 0 12px;font-weight:600}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+padding:16px;margin-bottom:12px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+.date{font-weight:700;font-size:16px;margin-bottom:12px}
+.date .tag{font-weight:400;font-size:13px;color:var(--muted);margin-left:8px}
+.row{display:flex;gap:12px;flex-wrap:wrap}
+.slot{flex:1 1 250px;min-width:0}
+a.btn{display:block;text-decoration:none;padding:12px 14px;border:1px solid var(--line);
+border-radius:10px;background:#fafbfc;color:var(--text);transition:.15s}
+a.btn:hover{border-color:var(--accent);background:#f0f6ff}
+a.btn .k{display:block;font-size:13px;color:var(--muted);margin-bottom:2px}
+a.btn .v{font-weight:600}
+.empty{display:block;padding:12px 14px;border:1px dashed var(--line);
+border-radius:10px;color:var(--muted);background:#fafbfc;font-size:14px}
+.report{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:22px 20px}
+.report h1{font-size:20px;margin:0 0 4px;border-bottom:1px solid var(--line);padding-bottom:12px}
+.report h2{font-size:17px;margin-top:26px;border-left:4px solid var(--accent);padding-left:10px}
+.report h3,.report h4{font-size:15px;margin-top:20px}
+.report p{margin:8px 0}
+.report ul{padding-left:22px;margin:8px 0}
+.report li{margin:4px 0}
+.report blockquote{margin:20px 0 0;padding:10px 14px;background:#f6f8fa;
+border-left:4px solid var(--line);color:var(--muted);font-size:14px}
+.report code{background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:14px}
+.report a{color:var(--accent)}
+.up{color:var(--up)}.down{color:var(--down)}
+.back{display:inline-block;margin-bottom:16px;color:var(--accent);text-decoration:none;font-size:14px}
+footer{margin-top:28px;color:var(--muted);font-size:13px;text-align:center;line-height:1.7}
+@media(max-width:520px){.wrap{padding:16px 12px 40px}.row{flex-direction:column}
+.report{padding:16px 14px}header h1{font-size:20px}}
+</style>
+</head>
+<body>
+<div class="wrap"><header><h1>📊 板块冷热提醒 · 报告列表</h1>
+<div class="sub">早报 08:00（隔夜美股风向标）· 晚报 20:30（A股/港股 + 资金面）｜点任意一条看全文｜周末与休市日不生成</div></header>
+<div class="month">2026年11月</div>
+<div class="card"><div class="date">2026-11-07<span class="tag">周六</span></div><div class="row">
+<div class="slot"><a class="btn" href="reports/2026-11-07-morning.html"><span class="k">🌅 早报 · 08:00</span><span class="v">隔夜美股风向标 →</span></a></div>
+<div class="slot"><span class="empty">🌆 晚报 · 20:30　休市 / 未生成</span></div>
+</div></div>
+<div class="card"><div class="date">2026-11-06<span class="tag">周五</span></div><div class="row">
+<div class="slot"><span class="empty">🌅 早报 · 08:00　休市 / 未生成</span></div>
+<div class="slot"><a class="btn" href="reports/2026-11-06-evening.html"><span class="k">🌆 晚报 · 20:30</span><span class="v">A股/港股 + 资金面 →</span></a></div>
+</div></div>
+<footer>由 GitHub Actions 每日自动生成并发布<br>数据：腾讯行情 / 东方财富｜仅供参考，不构成投资建议</footer></div>
+</body>
+</html>

@@ -32,6 +32,7 @@ import alerts as alerts_mod
 import calendar as calendar_mod
 import report as report_mod
 import summarize
+import web as web_mod
 
 
 def _now_beijing():
@@ -196,6 +197,7 @@ def run_morning():
     desp = report_mod.build_morning(quotes, ppt, al, ev,
                                    _now_beijing().strftime("%Y-%m-%d %H:%M"))
     title = report_mod.build_morning_title(quotes, ppt, al)
+    _save_web("morning", title, desp)
     ok, msg = pusher.push(title, desp)
     print("morning:", ok, msg)
 
@@ -245,6 +247,7 @@ def run_evening():
                                    _now_beijing().strftime("%Y-%m-%d %H:%M"),
                                    wind_ref=wind_ref)
     title = report_mod.build_evening_title(quotes, ppt, al)
+    _save_web("evening", title, desp)
     ok, msg = pusher.push(title, desp)
     print("evening:", ok, msg)
 
@@ -284,11 +287,24 @@ def run_annual():
     _save_report("annual_%d" % y, desp)
 
 
+def _save_web(kind, title, desp, date_str=None):
+    """生成网页版单篇报告并重建目录页；网页失败不影响微信推送。"""
+    try:
+        web_mod.save_report(kind, date_str or _beijing_date().isoformat(), title, desp)
+        web_mod.rebuild_index()
+    except Exception as e:
+        print("web report failed:", e)
+
+
 def _save_report(name, desp):
     os.makedirs(config.DATA_DIR, exist_ok=True)
     p = os.path.join(config.DATA_DIR, "report_%s.md" % name)
     with open(p, "w", encoding="utf-8") as f:
         f.write(desp)
+    kind = name.split("_")[0]
+    kind = {"half": "semiannual"}.get(kind, kind)
+    if kind in ("monthly", "semiannual", "annual"):
+        _save_web(kind, name, desp)
 
 
 def run_init():
