@@ -1,7 +1,7 @@
 name: 板块提醒-早报（隔夜美股）
 on:
   schedule:
-    - cron: '0 0 * * *'          # UTC 00:00 = 北京时间 08:00
+    - cron: '0 0 * * 1-6'        # UTC 00:00 = 北京时间 08:00；周一~周六（保留周六报周五收盘，周日无新鲜美股故跳过，省额度）
   workflow_dispatch: {}          # 支持 GitHub 网页手动触发测试
 
 permissions:

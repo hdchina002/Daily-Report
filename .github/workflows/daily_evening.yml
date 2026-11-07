@@ -1,7 +1,7 @@
 name: 板块提醒-晚报（A股/港股+资金面）
 on:
   schedule:
-    - cron: '30 12 * * *'        # UTC 12:30 = 北京时间 20:30
+    - cron: '30 12 * * 1-5'      # UTC 12:30 = 北京时间 20:30；周一~周五（周末 A/H 休市，跳过空跑，省额度）
   workflow_dispatch: {}
 
 permissions:
