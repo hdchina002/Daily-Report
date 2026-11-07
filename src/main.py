@@ -48,16 +48,21 @@ def _is_weekend(d):
 
 def us_session_closed():
     """早报要报的是『最近一个已收盘的美股交易日』。
-    今天(北京)是周末 → 无新鲜数据；或该交易日是美股假期 → 跳过（静默，不推送）。"""
+    北京时间周六早上对应美东周五收盘后数小时（冬令时≈北京周六 05:00），
+    数据新鲜 → 照发（报周五收盘）；周日 → 最近仍是上周五、已隔两日且属周末 → 静默跳过；
+    北京工作日 → 报最近一个美股交易日（回退跳过周末与美股假期，如周五-after-感恩节仍报上周三收盘）；
+    调休日(TRADING_DAY_OVERRIDE) → 照发。"""
     bd = _beijing_date()
     if bd.isoformat() in set(config.TRADING_DAY_OVERRIDE):
         return False
-    if _is_weekend(bd):
+    if bd.weekday() == 6:  # 周日：周末且无新鲜美股数据 → 静默跳过
         return True
-    # 北京工作日对应要报的美股交易日≈昨天(美东)，若为美股假期则无新鲜数据
+    # 计算「最近一个真实的美股交易日」：从 bd-1 起，回退跳过周末与美股假期
     sess = bd - datetime.timedelta(days=1)
-    if sess.isoformat() in set(config.US_HOLIDAYS):
-        return True
+    us_hol = set(config.US_HOLIDAYS)
+    while sess.weekday() >= 5 or sess.isoformat() in us_hol:
+        sess -= datetime.timedelta(days=1)
+    # 总能找到最近交易日（最差为上周五），故周六/工作日均有数据可报，不跳过
     return False
 
 
