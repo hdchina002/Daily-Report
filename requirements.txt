@@ -1,0 +1,4 @@
+# 本项目仅使用 Python 标准库（urllib / json / datetime），无需第三方依赖。
+# 若你更习惯用 requests，可取消下一行注释，并把 src/fetcher.py、src/pusher.py 中
+# 的 urllib 调用替换为 requests（功能等价）。
+# requests>=2.28

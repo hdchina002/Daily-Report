@@ -1,0 +1,40 @@
+name: 板块提醒-年报
+on:
+  schedule:
+    - cron: '0 0 31 12 *'        # 12月31日 北京时间 08:00 → 当年全年
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  annual:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 生成并推送年报
+        env:
+          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+          WXPUSHER_TOKEN: ${{ secrets.WXPUSHER_TOKEN }}
+          WXPUSHER_UIDS: ${{ secrets.WXPUSHER_UIDS }}
+        run: python src/main.py --mode annual
+
+      - name: 提交报告
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/ || true
+          if git diff --cached --quiet; then
+            echo "无数据变更"
+          else
+            git commit -m "report: 年报 $(date +%F)"
+            git push
+          fi
