@@ -99,6 +99,53 @@ def heat_tag(avg_pct):
     return ""
 
 
+# ───────────── 资金面分位（排名口径，与上面的「价格区间位置」不同） ─────────────
+# 成交额 / 净买入 / 两融余额这类数据常有极端尖峰（例如 2024-10 的天量），
+# 用 (v-min)/(max-min) 会把日常值压得很低，无法回答「今天算高还是低」。
+# 故资金面统一用「排名百分位」：今日值高于近 3 年多少比例的交易日。
+def capital_heat(pct):
+    """资金面高低标签（5 档），比价格分位只分过热/正常/过冷更细腻。"""
+    if pct is None:
+        return ""
+    if pct >= 90.0:
+        return "极高🔥"
+    if pct >= 70.0:
+        return "偏高"
+    if pct >= 30.0:
+        return "正常"
+    if pct >= 10.0:
+        return "偏低"
+    return "极低❄️"
+
+
+def capital_rank_stats(value, series):
+    """把当前值放进近 3 年日频序列，一次算出分位与「基数」。
+
+    返回 {'pct','median','low','high','n','heat'}；样本不足 30 个返回 {}。
+    - pct = 排名百分位（严格小于 value 的样本占比 ×100），允许负值（南向净买入可正可负）
+    - median / low / high 用于给用户一个直观的「历史基数」
+    """
+    vals = []
+    for v in series or []:
+        try:
+            f = float(v)
+            if f == f:                     # 过滤 NaN，但保留负数
+                vals.append(f)
+        except (TypeError, ValueError):
+            continue
+    if value is None or len(vals) < 30:
+        return {}
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        return {}
+    s = sorted(vals)
+    n = len(s)
+    pct = round(sum(1 for v in s if v < x) / n * 100.0, 1)
+    return {"pct": pct, "median": s[n // 2], "low": s[0], "high": s[-1],
+            "n": n, "heat": capital_heat(pct)}
+
+
 if __name__ == "__main__":
     # 自测：覆盖需求文档里的示例与边界
     closes = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
@@ -120,4 +167,12 @@ if __name__ == "__main__":
     assert pct_of_price(5.0, []) is None
     assert pct_of_price(None, closes) is None
     assert sector_heat([None, None])[0] is None
+    # 资金面排名分位：允许负值、抗极端值、样本不足返回 {}
+    s100 = [float(i) for i in range(-50, 50)]          # -50 ~ 49，共 100 个
+    st = capital_rank_stats(40.0, s100)
+    assert st["pct"] == 90.0 and st["low"] == -50.0 and st["n"] == 100, st
+    assert capital_rank_stats(-40.0, s100)["pct"] == 10.0   # 负值也成立
+    assert capital_rank_stats(5.0, []) == {}
+    assert capital_rank_stats(5.0, [1.0, 2.0]) == {}
+    assert capital_heat(None) == "" and capital_heat(95.0) == "极高🔥"
     print("percentile self-test OK")

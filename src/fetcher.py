@@ -431,18 +431,22 @@ def fetch_margin_balance():
     return res
 
 
-# ─────────────── A股月度总成交额（上证 + 深成）与 3 年分位 ───────────────
+# ─────────────── 资金面：近 3 年日频历史 + 每个数字的分位 ───────────────
+# 用户要求：A股成交额改为「每日」，且南向 / ETF成交额 / 两融 / 每日成交额
+# 都要带「近 3 年分位」，好判断这个数算高还是算低。
+# 序列单位约定：market_amount / 元；southbound / 亿港元；margin / 亿元；
+#              etf_amount / 亿元（每只 ETF 一条序列）。
 _MARKET_AMOUNT_SECID = ("1.000001", "0.399001")   # 上证指数、深证成指
-AMOUNT_CACHE_FILE = os.path.join(DATA_DIR, "amount_monthly.json")
+CAPITAL_HISTORY_FILE = os.path.join(DATA_DIR, "capital_history.json")
 
 
-def _em_daily_amount(secid, years=3):
-    """指数每日成交额（元），返回升序 [(date, amount)]。fields2=f51,f57。"""
+def _em_daily_series(secid, field="f57", years=3):
+    """东财日K序列，返回升序 [(date, value)]；field: f57=成交额(元), f53=收盘价。"""
     beg = (datetime.date.today()
            - datetime.timedelta(days=int(years * 365.25) + 15)).strftime("%Y%m%d")
     url = ("https://push2his.eastmoney.com/api/qt/stock/kline/get?"
            "secid=%s&klt=101&fqt=1&beg=%s&end=20500101&"
-           "fields1=f1,f2&fields2=f51,f57" % (secid, beg))
+           "fields1=f1,f2&fields2=f51,%s" % (secid, beg, field))
     text = http_get(url, decode="utf-8", retry=2, timeout=10,
                     referer="https://quote.eastmoney.com")
     if not text:
@@ -459,90 +463,175 @@ def _em_daily_amount(secid, years=3):
                 out.append((p[0], float(p[1])))
             except ValueError:
                 continue
+    out.sort(key=lambda x: x[0])
     return out
 
 
-def _load_amount_cache():
+def _em_datacenter_series(report, date_field, value_field, years=3,
+                          scale=1.0, filter_str="", columns=None):
+    """东财 datacenter 报表：分页拉近 3 年日频序列，返回升序 [(date, value*scale)]。
+    同日多通道（港股通沪+深）自动相加；遇到早于窗口的记录即停止翻页。"""
+    cutoff = (datetime.date.today()
+              - datetime.timedelta(days=int(years * 365.25) + 15)).isoformat()
+    cols = columns or (date_field + "," + value_field)
+    merged, page = {}, 1
+    while page <= 8:
+        url = ("https://datacenter-web.eastmoney.com/api/data/v1/get?"
+               "reportName=%s&columns=%s&pageNumber=%d&pageSize=500&"
+               "sortColumns=%s&sortTypes=-1&source=WEB&client=WEB%s"
+               % (report, cols, page, date_field,
+                  ("&filter=" + filter_str) if filter_str else ""))
+        j = _em_json(url)
+        res = (j or {}).get("result") or {}
+        rows = res.get("data") or []
+        if not rows:
+            break
+        stop = False
+        for r in rows:
+            d = (r.get(date_field) or "")[:10]
+            v = _to_float(r.get(value_field))
+            if not d or v is None:
+                continue
+            if d < cutoff:
+                stop = True
+                continue
+            merged[d] = merged.get(d, 0.0) + v * scale
+        if stop or page >= (res.get("pages") or 1):
+            break
+        page += 1
+    return sorted(merged.items())
+
+
+def _southbound_series(years=3):
+    """港股通沪(002)+深(004) 每日净买入，单位亿港元（NET_DEAL_AMT 为百万港元）。"""
+    merged = {}
+    for mt in ("002", "004"):
+        f = urllib.parse.quote('(MUTUAL_TYPE="%s")' % mt)
+        for d, v in _em_datacenter_series(
+                "RPT_MUTUAL_DEAL_HISTORY", "TRADE_DATE", "NET_DEAL_AMT",
+                years, scale=0.01, filter_str=f,
+                columns="TRADE_DATE,NET_DEAL_AMT,MUTUAL_TYPE"):
+            merged[d] = merged.get(d, 0.0) + v
+    return sorted(merged.items())
+
+
+def _margin_series(years=3):
+    """每日两融余额，单位亿元（RZRQYE 为元，官方披露滞后一个交易日）。"""
+    return _em_datacenter_series(
+        "RPTA_RZRQ_LSHJ", "DIM_DATE", "RZRQYE", years, scale=1e-8,
+        columns="DIM_DATE,RZRQYE")
+
+
+def _market_amount_series(years=3):
+    """上证 + 深成 每日成交额合计，单位元。"""
+    merged = {}
+    for secid in _MARKET_AMOUNT_SECID:
+        for d, v in _em_daily_series(secid, "f57", years):
+            merged[d] = merged.get(d, 0.0) + v
+    return sorted(merged.items())
+
+
+def _etf_amount_series(years=3):
+    """9 只行业ETF 每日成交额，单位亿元；{code: {'dates','values'}}。"""
+    out = {}
+    for code, _name in ETF_SHARE_TRACK:
+        secid = ("1." if code.startswith("5") else "0.") + code
+        bars = _em_daily_series(secid, "f57", years)
+        if bars:
+            out[code] = {"dates": [b[0] for b in bars],
+                         "values": [round(b[1] / 1e8, 4) for b in bars]}
+    return out
+
+
+def _node(dates_values):
+    return {"dates": [d for d, _ in dates_values],
+            "values": [round(v, 4) for _, v in dates_values]}
+
+
+def _load_capital_history():
     try:
-        with open(AMOUNT_CACHE_FILE, encoding="utf-8") as f:
-            return json.load(f).get("months") or {}
+        with open(CAPITAL_HISTORY_FILE, encoding="utf-8") as f:
+            return json.load(f)
     except Exception:
         return {}
 
 
-def _save_amount_cache(months):
+def _save_capital_history(h):
     os.makedirs(DATA_DIR, exist_ok=True)
-    tmp = AMOUNT_CACHE_FILE + ".tmp"
+    tmp = CAPITAL_HISTORY_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"months": months,
-                   "updated": datetime.date.today().isoformat()},
-                  f, ensure_ascii=False)
-    os.replace(tmp, AMOUNT_CACHE_FILE)
+        json.dump(h, f, ensure_ascii=False)
+    os.replace(tmp, CAPITAL_HISTORY_FILE)
 
 
-def _summarize_amount(months, years=3):
-    """月度汇总 → 当月总额/日均 + 近 3 年分位。
+def fetch_capital_history(years=3, force=False):
+    """近 3 年资金面日频序列。当天已拉过直接复用缓存；单项失败降级读旧缓存。
 
-    分位用「月日均成交额」而不是月总额：当月往往没走完，且各月交易日数不同，
-    用日均才能和历史完整月公平比较。
+    公开仓库 Actions 每天只跑一次晚报，这里全量刷新一次（约 14 个请求、
+    十几秒）即可；缓存同时是接口临时故障时的兜底。
     """
-    if not months:
+    cached = _load_capital_history()
+    if not force and cached.get("updated") == datetime.date.today().isoformat():
+        return cached
+    jobs = (
+        ("market_amount", lambda: _node(_market_amount_series(years))),
+        ("southbound",    lambda: _node(_southbound_series(years))),
+        ("margin",        lambda: _node(_margin_series(years))),
+        ("etf_amount",    lambda: _etf_amount_series(years)),
+    )
+    h = {"updated": datetime.date.today().isoformat()}
+    for key, fn in jobs:
+        try:
+            node = fn()
+            ok = bool(node) if key == "etf_amount" else len(node.get("values") or []) >= 30
+            if ok:
+                h[key] = node
+        except Exception as e:
+            print("capital history %s failed: %s" % (key, e))
+    for key, _ in jobs:                       # 失败项沿用旧缓存
+        if key not in h and cached.get(key):
+            h[key] = cached[key]
+    if len(h) > 1:
+        _save_capital_history(h)
+    return h if len(h) > 1 else cached
+
+
+def _cap_stats(value, node):
+    """当前值 → 近3年日频序列里的排名分位 + 中位数/区间 + 高低标签。"""
+    if not node or value is None:
         return {}
-    keys = sorted(months)
-    cur_key = keys[-1]
-
-    def node(k):
-        n = months[k]
-        days = int(n.get("days") or 1)
-        return {"total": float(n["total"]), "days": days,
-                "daily_avg": float(n["total"]) / days}
-
-    cur = node(cur_key)
-    past = [node(k)["daily_avg"] for k in keys[:-1]][-int(years * 12):]
-    pct = percentile.pct_of_price(cur["daily_avg"], past) if past else None
-    heat = ""
-    if pct is not None:
-        if pct >= HEAT_HOT:
-            heat = "过热🔥"
-        elif pct <= HEAT_COLD:
-            heat = "过冷❄️"
-    return {
-        "asof": months[cur_key].get("last_date", ""),
-        "month": cur_key,
-        "current": cur,
-        "past_months": len(past),
-        "percentile": pct,
-        "heat": heat,
-    }
+    return percentile.capital_rank_stats(value, node.get("values") or [])
 
 
-def fetch_market_amount_monthly(years=3):
-    """上证指数 + 深证成指 每月总成交额，及当月在近 3 年中的位置。
+def attach_capital_percentiles(capital, hist=None):
+    """给 capital 每一项附加 3 年分位（就地更新并返回），不改原有数值。
 
-    金额单位统一为**元**，展示时再换算成万亿。接口失败降级读
-    data/amount_monthly.json 缓存；仍无数据返回 {}（报告显示「—」）。
+    market_amount 直接用 K 线序列最后一天作为「当日成交额」，与分位口径完全自洽。
     """
-    series = {}
-    ok = True
-    for secid in _MARKET_AMOUNT_SECID:
-        bars = _em_daily_amount(secid, years)
-        if not bars:
-            ok = False
-            break
-        for d, amt in bars:
-            m = d[:7]
-            n = series.setdefault(m, {"total": 0.0, "dates": set()})
-            n["total"] += amt
-            n["dates"].add(d)
-    if ok and series:
-        months = {m: {"total": round(n["total"], 2),
-                      "days": len(n["dates"]),
-                      "last_date": max(n["dates"])}
-                  for m, n in series.items()}
-        _save_amount_cache(months)
-    else:
-        months = _load_amount_cache()
-    return _summarize_amount(months, years)
+    h = hist if hist is not None else _load_capital_history()
+
+    node = h.get("market_amount") or {}
+    dates, vals = node.get("dates") or [], node.get("values") or []
+    ma = {}
+    if dates and vals:
+        ma = {"date": dates[-1], "amount": vals[-1], "days": len(vals)}
+        ma.update(_cap_stats(vals[-1], node))
+    capital["market_amount"] = ma
+
+    sb = capital.get("southbound") or {}
+    if sb.get("south_net") is not None:
+        sb.update(_cap_stats(sb["south_net"], h.get("southbound") or {}))
+    mg = capital.get("margin") or {}
+    if mg.get("balance") is not None:
+        mg.update(_cap_stats(mg["balance"], h.get("margin") or {}))
+
+    etf_nodes = h.get("etf_amount") or {}
+    for code, e in (capital.get("etf") or {}).items():
+        if e.get("amount") is not None:
+            st = _cap_stats(e["amount"], etf_nodes.get(code) or {})
+            e["amount_pct"] = st.get("pct")
+            e["amount_heat"] = st.get("heat")
+    return capital
 
 
 # ───────────────────────────── 休市日判断 ─────────────────────────────

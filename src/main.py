@@ -218,12 +218,12 @@ def run_evening():
     al = alerts_mod.check_alerts(quotes, ppt)
     ev = calendar_mod.tomorrow_events()
 
-    # 资金面
+    # 资金面：实时值 + 近 3 年日频序列算出的各项分位（A股当日成交额、南向、两融、ETF成交额）
     capital = {"southbound": fetcher.fetch_southbound(),
                "etf": fetcher.fetch_etf_shares(),
-               "margin": fetcher.fetch_margin_balance(),
-               "market_amount": fetcher.fetch_market_amount_monthly(
-                   config.PERCENTILE_WINDOW_YEARS)}
+               "margin": fetcher.fetch_margin_balance()}
+    capital = fetcher.attach_capital_percentiles(
+        capital, fetcher.fetch_capital_history(config.PERCENTILE_WINDOW_YEARS))
     # 计算 ETF 份额 / 两融 较上日 delta
     prev = _last_prior_snapshot()
     if prev and prev.get("capital"):
@@ -319,6 +319,12 @@ def run_init():
     total = sum(len(v.get("dates", [])) for v in hist.values())
     print("init done: %d 个标的，共 %d 条历史收盘价，已写入 %s"
           % (len(hist), total, config.HISTORY_FILE))
+    # 资金面近 3 年日频序列（A股成交额 / 南向 / 两融 / 9只ETF成交额分位的基数）
+    ch = fetcher.fetch_capital_history(config.PERCENTILE_WINDOW_YEARS, force=True)
+    parts = ["%s=%d" % (k, len((ch.get(k) or {}).get("values") or []))
+             for k in ("market_amount", "southbound", "margin")]
+    parts.append("etf_amount=%d" % len(ch.get("etf_amount") or {}))
+    print("capital history: " + ", ".join(parts))
 
 
 def run_test():

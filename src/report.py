@@ -36,7 +36,7 @@ def _pct(v):
 
 
 def _trillion(v):
-    """元 → 万亿，用于 A 股月度总成交额。"""
+    """元 → 万亿，用于 A 股每日总成交额及其历史区间。"""
     if v is None:
         return "—"
     return "%.2f 万亿" % (float(v) / 1e12)
@@ -267,33 +267,34 @@ def build_evening(quotes, pct_data, alerts, events, capital, asof, wind_ref=None
     # 三、资金面（硬数据）
     P.append("## 三、资金面（硬数据）")
 
-    # 3.1 A股月度总成交额（上证 + 深成）+ 3年分位 + 过热判定
+    # 3.1 A股「当日」总成交额（上证 + 深成）+ 3年分位 + 历史基数
     ma = (capital or {}).get("market_amount") or {}
-    P.append("**A股月度总成交额（上证 + 深成）**")
-    if ma.get("current"):
-        c = ma["current"]
-        P.append("- 本月（%s）至今：**%s**（%d 个交易日，日均 %s）"
-                 % (ma.get("month", ""), _trillion(c["total"]), c["days"],
-                    _trillion(c["daily_avg"])))
-        p = ma.get("percentile")
-        tag = ma.get("heat") or ("正常（不过热）" if p is not None else "")
-        P.append("- 3年分位（按月日均，对比过去 %d 个完整月）：**%s** %s"
-                 % (ma.get("past_months", 0),
-                    ("%.0f%%" % p) if p is not None else "—", tag))
+    P.append("**A股当日总成交额（上证 + 深成）**")
+    if ma.get("amount") is not None:
+        P.append("- %s：**%s** ｜ 3年分位 **%s** %s"
+                 % (ma.get("date", ""), _trillion(ma["amount"]),
+                    ("%.0f%%" % ma["pct"]) if ma.get("pct") is not None else "—",
+                    ma.get("heat", "")))
+        if ma.get("median") is not None:
+            P.append("- 参照：近3年 %d 个交易日，日成交额中位 %s（区间 %s ~ %s）"
+                     % (ma.get("days", 0), _trillion(ma["median"]),
+                        _trillion(ma.get("low")), _trillion(ma.get("high"))))
     else:
-        P.append("- 本月：—（成交额接口暂不可用）")
+        P.append("- 今日：—（成交额接口暂不可用）")
     P.append("")
 
     sb = (capital or {}).get("southbound") or {}
     if sb.get("south_net") is not None:
         dt = ("（%s）" % sb["date"]) if sb.get("date") else ""
-        P.append("- 南向（港股通）净买入%s：**%s 亿港元**"
-                 % (dt, _f(sb["south_net"], 2)))
+        pt = (" ｜ 3年分位 %.0f%%%s" % (sb["pct"], (" " + sb["heat"]) if sb.get("heat") else "")) \
+            if sb.get("pct") is not None else ""
+        P.append("- 南向（港股通）净买入%s：**%s 亿港元**%s"
+                 % (dt, _f(sb["south_net"], 2), pt))
     else:
         P.append("- 南向（港股通）净买入：—（%s）" % sb.get("note", "接口暂不可用"))
     P.append("")
 
-    P.append("**行业ETF份额变化 + 成交额**（净申购=资金流入；成交额大=交易热）")
+    P.append("**行业ETF份额变化 + 成交额**（3年分位＝该成交额高于近3年多少比例的交易日）")
     etf = (capital or {}).get("etf") or {}
     for code, name in _etf_list():
         e = etf.get(code) or {}
@@ -301,7 +302,13 @@ def build_evening(quotes, pct_data, alerts, events, capital, asof, wind_ref=None
         d = e.get("delta")
         dstr = ("（净申购 +%s 亿份）" % _f(d, 2)) if d is not None and d > 0 else \
               ("（净赎回 %s 亿份）" % _f(d, 2)) if d is not None and d < 0 else ""
-        astr = ("｜ 成交额 %s 亿" % _f(e["amount"], 1)) if e.get("amount") is not None else ""
+        astr = ""
+        if e.get("amount") is not None:
+            astr = "｜ 成交额 %s 亿" % _f(e["amount"], 1)
+            if e.get("amount_pct") is not None:
+                astr += "（3年分位 %.0f%%%s）" % (
+                    e["amount_pct"],
+                    (" " + e["amount_heat"]) if e.get("amount_heat") else "")
         bits = []
         if sh is not None:
             bits.append("%s 亿份" % sh)
@@ -321,7 +328,9 @@ def build_evening(quotes, pct_data, alerts, events, capital, asof, wind_ref=None
         dstr = ("（较上日 %s%s 亿）" % ("+" if (delta or 0) >= 0 else "",
                                         _f(delta, 2))) if delta is not None else ""
         dt = ("（%s）" % mg["date"]) if mg.get("date") else ""
-        P.append("**融资融券余额**%s：%s%s" % (dt, bstr, dstr))
+        pt = (" ｜ 3年分位 %.0f%%%s" % (mg["pct"], (" " + mg["heat"]) if mg.get("heat") else "")) \
+            if mg.get("pct") is not None else ""
+        P.append("**融资融券余额**%s：%s%s%s" % (dt, bstr, dstr, pt))
     else:
         P.append("**融资融券余额**：—（%s）" % mg.get("note", "接口暂不可用"))
     P.append("")
@@ -368,8 +377,9 @@ def build_evening(quotes, pct_data, alerts, events, capital, asof, wind_ref=None
         P.append("")
 
     P.append("> 数据：腾讯行情（A/H 收盘）+ 东方财富（历史K线 / 资金面 / 指数日成交额）。红涨绿跌。")
-    P.append("> 分位＝近 3 年（约 756 个交易日）前复权收盘价区间位置：0%=三年最低，100%=三年最高；上市不足 3 年的按上市以来计算。")
-    P.append("> 月度成交额＝上证指数＋深证成指每日成交额合计；当月未走完，3年分位按「月日均」与过去 36 个完整月比较，≥80% 过热🔥 / ≤20% 过冷❄️。")
+    P.append("> 个股/板块「3年分位」＝近 3 年（约 756 个交易日）前复权收盘价区间位置：0%=三年最低，100%=三年最高；上市不足 3 年的按上市以来计算。")
+    P.append("> 资金面「3年分位」＝排名口径：该数值高于近 3 年约 X% 的交易日（≥70% 偏高、≤30% 偏低；≥90% 极高🔥、≤10% 极低❄️）；与上面的价格分位口径不同，不宜直接比较。")
+    P.append("> A股当日成交额＝上证指数＋深证成指当日成交额合计；ETF 份额是存量规模（趋势增长），其分位参考意义低，故只对成交额算分位。")
     return "\n".join(P)
 
 

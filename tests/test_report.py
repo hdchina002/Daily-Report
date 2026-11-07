@@ -32,12 +32,16 @@ ppt = {c: {"week52": 70.0, "three_year": 85.0 if "NVDA" in c else 60.0}
        for c in quotes}
 
 capital = {
-    "southbound": {"south_net": 25.4, "note": ""},
+    "southbound": {"south_net": 25.4, "note": "", "pct": 45.0, "heat": "正常"},
     "southbound_focus": {"hk00700": {"net": 8.1}, "hk03690": {"net": -2.3}},
     "etf": {code: {"shares": 120.5, "delta": 1.2 if i % 2 == 0 else -0.8,
-                    "amount": 50.0 + i}   # 成交额（亿元），验证晚报展示
+                    "amount": 50.0 + i, "amount_pct": 40.0 + i,
+                    "amount_heat": "正常"}
             for i, (code, _) in enumerate(config.ETF_SHARE_TRACK)},
-    "margin": {"balance": 15300.2, "delta": 45.6},
+    "margin": {"balance": 15300.2, "delta": 45.6, "pct": 62.0, "heat": "正常"},
+    "market_amount": {"date": "2026-11-06", "amount": 1.66e12, "pct": 53.0,
+                      "heat": "正常", "median": 1.60e12, "low": 0.48e12,
+                      "high": 3.94e12, "days": 737},
 }
 
 events = [("2026-11-08", "美国CPI", "宏观", config.EVENT_IMPACT["美国CPI"]),
@@ -60,4 +64,9 @@ assert "今日中国映射" in m, "早报应有中国映射段"
 assert "风向验证" in e, "晚报应有风向验证段"
 assert "FOMC" in e and "美债" in e, "事件影响应渲染"
 assert "跟随" in e or "背离" in e, "风向验证应有结论"
+# 资金面：改为「当日成交额」，且每项都带 3 年分位
+assert "A股当日总成交额" in e and "1.66 万亿" in e, "应显示当日成交额"
+assert "参照：近3年" in e, "应给出近3年中位/区间作为基数"
+assert e.count("3年分位") >= 12, "当日成交额/南向/9只ETF/两融都应带分位"
+assert "本月（" not in e, "不应再出现月度累计成交额"
 print("\n=== report smoke test OK ===")
