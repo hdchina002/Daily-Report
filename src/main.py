@@ -171,9 +171,54 @@ def _load_last_morning():
         return None
 
 
+# ---- 双班定时的幂等锁：只有「推送成功」才落标记，漏班时兜底班能补推 ----
+def _pushed_marker_path():
+    return os.path.join(config.DATA_DIR, "pushed_%d.json" % _beijing_date().year)
+
+
+def _force_push():
+    """手动 Run workflow 勾选 force，或本地设 FORCE_PUSH=1 时强制重推。"""
+    return os.environ.get("FORCE_PUSH", "").strip().lower() in ("1", "true", "yes")
+
+
+def _already_pushed(mode):
+    if _force_push():
+        return False
+    path = _pushed_marker_path()
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, encoding="utf-8") as f:
+            marks = json.load(f)
+    except Exception:
+        return False
+    key = "%s-%s" % (_beijing_date().isoformat(), mode)
+    return key in marks
+
+
+def _mark_pushed(mode):
+    path = _pushed_marker_path()
+    marks = {}
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                marks = json.load(f)
+        except Exception:
+            marks = {}
+    key = "%s-%s" % (_beijing_date().isoformat(), mode)
+    marks[key] = _now_beijing().strftime("%Y-%m-%d %H:%M:%S")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(marks, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
 def run_morning():
     if us_session_closed():
         print("morning: 今日(周末/美股休市)不推送，跳过")
+        return
+    if _already_pushed("morning"):
+        print("morning: 今日已成功推送，兜底班跳过（不重复推）")
         return
 
     codes = [c for c, _ in config.US_INDICES]
@@ -199,12 +244,17 @@ def run_morning():
     title = report_mod.build_morning_title(quotes, ppt, al)
     _save_web("morning", title, desp)
     ok, msg = pusher.push(title, desp)
+    if ok:
+        _mark_pushed("morning")
     print("morning:", ok, msg)
 
 
 def run_evening():
     if a_session_closed():
         print("evening: 今日(周末/A股港股休市)不推送，跳过")
+        return
+    if _already_pushed("evening"):
+        print("evening: 今日已成功推送，兜底班跳过（不重复推）")
         return
 
     codes = ([c for c, _ in config.A_INDICES] + [c for c, _ in config.HK_INDICES])
@@ -250,6 +300,8 @@ def run_evening():
     title = report_mod.build_evening_title(quotes, ppt, al)
     _save_web("evening", title, desp)
     ok, msg = pusher.push(title, desp)
+    if ok:
+        _mark_pushed("evening")
     print("evening:", ok, msg)
 
 
